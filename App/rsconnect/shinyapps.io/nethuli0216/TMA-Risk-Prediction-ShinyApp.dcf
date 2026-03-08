@@ -1,0 +1,12 @@
+name: TMA-Risk-Prediction-ShinyApp
+title: TMA-Risk-Prediction-ShinyApp
+username: nethuli0216
+account: nethuli0216
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 16841256
+bundleId: 11678906
+url: https://nethuli0216.shinyapps.io/TMA-Risk-Prediction-ShinyApp/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

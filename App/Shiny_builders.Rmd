@@ -1,0 +1,614 @@
+---
+title: "Survival Outcome of Allogeneic Hematopoietic Stem Cell Transplantation Patients"
+output: html_notebook
+---
+
+```{r}
+library(shiny)
+library(tidyverse)
+library(bslib)
+library(haven)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(caret)
+library(pROC)
+library(rsample) 
+```
+
+```{r}
+ui <- page_fluid(
+  theme = bs_theme(bootswatch = "solar"),
+
+  tags$head(
+    tags$style(HTML("
+      body, label, input, button, select, h1, h2, h3, h4, h5, h6, p, .card-header, .card-body {
+        color: white !important;
+      }
+      .form-control, .form-select, .form-check-label {
+        background-color: #2b2b2b !important;
+        color: white !important;
+      }
+      .card {
+        background-color: #222 !important;
+        border: 1px solid #444 !important;
+      }
+      .nav-tabs .nav-link.active {
+        background-color: #333 !important;
+        color: white !important;
+      }
+      .nav-tabs .nav-link {
+        color: #aaa !important;
+      }
+    "))
+  ),
+
+  tags$style(HTML("
+    .selectize-control.single .selectize-input {
+      background-color: #2b2b2b !important;
+      color: white !important;
+      border: 1px solid #555 !important;
+    }
+    .selectize-dropdown, .selectize-dropdown-content {
+      background-color: #2b2b2b !important;
+      color: white !important;
+    }
+    .selectize-dropdown .option:hover {
+      background-color: #444 !important;
+      color: white !important;
+    }
+    .selectize-control .selectize-input.focus {
+      border-color: #888 !important;
+    }
+  ")),
+
+  # Header
+  card(
+    card_header(
+      h1("Survival Outcome of Allogeneic Hematopoietic Stem Cell Transplantation Patients",
+         class = "text-center")
+    ),
+    p("This application visualizes data from a study on transplant-associated thrombotic microangiopathy,
+      allowing users to explore relationships between patient characteristics, outcomes, and risk factors.")
+  ),
+
+  # Main layout with tabs
+  navset_tab(
+    nav_panel("Data Overview",
+  page_sidebar(
+    sidebar = sidebar(
+      h4("Data Summary"), 
+      verbatimTextOutput("dataSummary"),
+      br(),
+      downloadButton("downloadData", "Download Dataset")
+    ),
+    card(
+      card_header("Dataset Preview"), 
+      DTOutput("dataTable")
+    )
+  )
+),
+
+    nav_panel("Exploratory Analysis",
+      page_sidebar(
+        sidebar = sidebar(
+          selectInput("plotType", "Select Plot Type",
+            choices = c(
+              "Age Distribution" = "age_dist",
+              "Outcome by Sex"   = "sex_outcome",
+              "Overall Survival" = "overall",
+              "Age by Outcome"   = "age_outcome",
+              "Race by Outcome"  = "race_outcome",
+              "Time to Follow-up"= "time_followup",
+              "GVHD & Survival"  = "gvhd_survival",
+              "Renal Failure & Survival" = "renal_survival"
+            )
+          ),
+          conditionalPanel("input.plotType == 'age_dist'", sliderInput("ageBins", "Bins", 5, 50, 20)),
+          conditionalPanel("input.plotType == 'age_outcome'", sliderInput("ageOutcomeBins", "Bins", 5, 50, 20)),
+          downloadButton("downloadPlot", "Download Plot")
+        ),
+        card(card_header("Visualization"), plotlyOutput("exploratoryPlot", height = "500px")),
+        card(card_header("Interpretation"), textOutput("plotInterpretation"))
+      )
+    ),
+
+    nav_panel("Logistic Regression Model",
+      layout_columns(
+        card(card_header("Model Summary"), verbatimTextOutput("modelSummary")),
+        card(card_header("Odds Ratios"), plotlyOutput("forestPlot", height = "600px"))
+      ),
+      card(card_header("Model Performance"),
+        layout_columns(
+          card(plotlyOutput("rocCurve")), card(verbatimTextOutput("modelMetrics"))
+        )
+      )
+    ),
+
+    nav_panel("Risk Stratification",
+      page_sidebar(
+        sidebar = sidebar(
+          sliderInput("cutoff1", "Low/Med Cutoff", 0.1, 0.5, 0.3, 0.05),
+          sliderInput("cutoff2", "Med/High Cutoff", 0.5, 0.9, 0.6, 0.05),
+          radioButtons("stratVar", "Stratify By:",
+            choices = c(
+              "Age Group" = "age_group",
+              "GVHD Severity" = "agvhdgp",
+              "Renal Failure" = "renfail"
+            )
+          )
+        ),
+        card(card_header("Risk Distribution"), plotlyOutput("riskPlot", height = "400px")),
+        card(card_header("Variable Importance"), plotlyOutput("variableImportance", height = "400px"))
+      )
+    ),
+
+    nav_panel("About",
+      card(card_header(h3("About This Application")),
+        p("Interactive exploration of transplant data."),
+        tags$ul(
+          tags$li("Data visualization"),
+          tags$li("Logistic modeling"),
+          tags$li("Risk stratification"),
+          tags$li("Interpretation")
+        )
+      ),
+      card(card_header(h3("Variables Description")), DTOutput("variablesTable"))
+    )
+  )
+)
+
+
+```
+
+```{r}
+server <- function(input, output, session) {
+
+  # Reactive ingest & clean
+  working_df <- reactive({
+  # Always load the fixed dataset
+  df <- read_sas("C:/Users/nethu/OneDrive/Documents/GitHub/TMA-Risk-Prediction-ShinyApp/Data/RT14-02.sas7bdat")
+  
+  # Keep your existing data cleaning code
+  data <- df %>% select(-intxtma, -intxrenfail, -intxagvhd24, -intxagvhd34)
+
+  for(col in c("dead","karnofcat","hctcigp","death_gp","orgfail",
+               "racegp","kidfunc","drcmvgp","dnrtype","priautogp",
+               "condgp","atgcampathgp","tma_event","plsmpshi",
+               "agvhdgp","agvhd24","agvhd34","dwoagvhd24","dwoagvhd34",
+               "renfail","dworenfail")){
+    data[[col]][ data[[col]] == 99 ] <- NA
+  }
+  data$sex[ data$sex %in% c(8,9) ] <- NA
+
+    data <- data %>%
+      mutate(
+        dead        = factor(dead,        levels = c(0,1), labels = c("Alive","Dead")),
+        karnofcat   = factor(karnofcat,   levels = c(1,2), labels = c("90-100","<90")),
+        hctcigp     = factor(hctcigp,     levels = c(0,1,2,3), labels = c("No comorbidity","1","2",">=3")),
+        death_gp    = factor(death_gp,    levels = 0:9, labels = c("Alive","Primary Disease","Graft rejection/failure",
+                                                                  "GVHD","Infection","Organ failure",
+                                                                  "Second malignancy","Hemorrhage","Vascular","Other")),
+        sex         = factor(sex,         levels = c(1,2), labels = c("Male","Female")),
+        racegp      = factor(racegp,      levels = c(1,2,3), labels = c("Caucasian","African-American","Others")),
+        kidfunc     = factor(kidfunc,     levels = c(0,1), labels = c("Decreased kidney function","Normal kidney function")),
+        drcmvgp     = factor(drcmvgp,     levels = c(1,2,3,4), labels = c("+/+", "+/-", "-/+", "-/-")),
+        dnrtype     = factor(dnrtype,     levels = c(0,1,2,3,4,5,6,7,8,9,11,12,13,14),
+                              labels = c("Autologous","HLA-identical sibling","Twin","Other related",
+                                         "Well-matched unrelated","Partially-matched unrelated",
+                                         "Mis-matched unrelated","Multi-donor","Unrelated, HLA match unknown",
+                                         "Cord blood","CB 6/6","CB 5/6","CB <=4/6","CB, HLA match unknown")),
+        priautogp   = factor(priautogp,   levels = c(0,1), labels = c("No","Yes")),
+        condgp      = factor(condgp,      levels = c(1,2,3,4),
+                              labels = c("Myeloablative TBI","Myeloablative Bu based","Other myeloablative","RIC/NMA")),
+        atgcampathgp= factor(atgcampathgp,levels = c(1,2,3,4),
+                              labels = c("ATG + CAMPATH","ATG alone","CAMPATH alone","No ATG or CAMPATH")),
+        tma_event   = factor(tma_event,   levels = c(0,1), labels = c("No","Yes")),
+        plsmpshi    = factor(plsmpshi,    levels = c(0,1), labels = c("No","Yes")),
+        agvhdgp     = factor(agvhdgp,     levels = c(0,1,2), labels = c("No aGVHD or grade 1","Grade 2","Grade 3-4")),
+        agvhd24     = factor(agvhd24,     levels = c(0,1), labels = c("No","Yes")),
+        agvhd34     = factor(agvhd34,     levels = c(0,1), labels = c("No","Yes")),
+        dwoagvhd24  = factor(dwoagvhd24,  levels = c(0,1), labels = c("No","Yes")),
+        dwoagvhd34  = factor(dwoagvhd34,  levels = c(0,1), labels = c("No","Yes")),
+        renfail     = factor(renfail,     levels = c(0,1), labels = c("No","Yes")),
+        dworenfail  = factor(dworenfail,  levels = c(0,1), labels = c("No","Yes"))
+      ) %>%
+      mutate(
+        age_group = cut(
+          age,
+          breaks = c(0, 30, 50, Inf),
+          labels = c("< 30", "30–50", "> 50"),
+          right = FALSE
+        )
+      )
+    
+    working <- data[, -c(27,31)]
+    na.omit(working)
+  })
+
+  custom_theme <- theme_minimal(base_family = "Arial") + theme(
+    plot.background = element_rect(fill = "#2b2b2b", color = NA),
+    panel.background = element_rect(fill = "#2b2b2b", color = NA),
+    panel.grid.major = element_line(color = "#444444"),
+    panel.grid.minor = element_line(color = "#3a3a3a"),
+    axis.text = element_text(color = "#cccccc"),
+    axis.title = element_text(color = "#ffffff"),
+    plot.title = element_text(color = "#ffffff", size = 16, face = "bold"),
+    legend.background = element_rect(fill = "#2b2b2b"),
+    legend.text = element_text(color = "#ffffff"),
+    legend.title = element_text(color = "#ffffff")
+  )
+
+  fill_colors <- c("Alive" = "#66c2a5", "Dead" = "#fc8d62")
+
+  output$dataTable <- renderDT(datatable(working_df()[1:100,], options = list(scrollX = TRUE)))
+
+ output$dataSummary <- renderPrint({
+  df <- working_df()
+  # Create a more structured summary
+  cat("Dataset Summary:\n")
+  cat("-------------------------------\n")
+  cat(sprintf("Total Patients: %d\n", nrow(df)))
+  cat(sprintf("Variables: %d\n\n", ncol(df)))
+  
+  # Key outcome statistics
+  outcome_table <- table(df$dead)
+  outcome_pct <- prop.table(outcome_table) * 100
+  
+  cat("Survival Outcome:\n")
+  cat("-------------------------------\n")
+  for (i in 1:length(outcome_table)) {
+    cat(sprintf("%s: %d (%.1f%%)\n", 
+                names(outcome_table)[i], 
+                outcome_table[i],
+                outcome_pct[i]))
+  }
+  
+  # Age statistics
+  cat("\nAge Distribution:\n")
+  cat("-------------------------------\n")
+  cat(sprintf("Mean Age: %.1f years\n", mean(df$age, na.rm = TRUE)))
+  cat(sprintf("Age Range: %.0f - %.0f years\n", 
+              min(df$age, na.rm = TRUE), 
+              max(df$age, na.rm = TRUE)))
+  
+  # Sex distribution
+  cat("\nSex Distribution:\n")
+  cat("-------------------------------\n")
+  sex_table <- table(df$sex)
+  sex_pct <- prop.table(sex_table) * 100
+  for (i in 1:length(sex_table)) {
+    cat(sprintf("%s: %d (%.1f%%)\n", 
+                names(sex_table)[i], 
+                sex_table[i],
+                sex_pct[i]))
+  }
+  
+  # GVHD distribution
+  if ("agvhdgp" %in% names(df)) {
+    cat("\nGVHD Severity:\n")
+    cat("-------------------------------\n")
+    gvhd_table <- table(df$agvhdgp)
+    gvhd_pct <- prop.table(gvhd_table) * 100
+    for (i in 1:length(gvhd_table)) {
+      cat(sprintf("%s: %d (%.1f%%)\n", 
+                  names(gvhd_table)[i], 
+                  gvhd_table[i],
+                  gvhd_pct[i]))
+    }
+  }
+  
+  # Renal failure
+  if ("renfail" %in% names(df)) {
+    cat("\nRenal Failure:\n")
+    cat("-------------------------------\n")
+    renal_table <- table(df$renfail)
+    renal_pct <- prop.table(renal_table) * 100
+    for (i in 1:length(renal_table)) {
+      cat(sprintf("%s: %d (%.1f%%)\n", 
+                  names(renal_table)[i], 
+                  renal_table[i],
+                  renal_pct[i]))
+    }
+  }
+})
+exploratory_gg <- reactive({
+    df <- working_df()
+    p <- switch(input$plotType,
+      "age_dist"      = ggplot(df, aes(age)) + geom_histogram(bins = input$ageBins, fill = "#66c2a5", color = "black") + labs(title = "Age Distribution"),
+      "sex_outcome"   = ggplot(df, aes(sex, fill = dead)) + geom_bar(position = "fill") + scale_fill_manual(values = fill_colors) + labs(title = "Outcomes by Sex", fill = "Outcome"),
+      # … other cases …
+      "renal_survival"= ggplot(df, aes(renfail, fill = dead)) + geom_bar(position = "fill") + scale_fill_manual(values = fill_colors) + labs(title = "Survival by Renal Failure", fill = "Outcome")
+    )
+    p + custom_theme
+  })
+
+  # 2. Render the Plotly widget from that ggplot
+  output$exploratoryPlot <- renderPlotly({
+    ggplotly(exploratory_gg()) %>%
+      layout(legend = list(title = list(text = "<b>Outcome</b>"),
+                           orientation = "h", x = 0.1, y = -0.2))
+  })
+
+  # 3. Add the download handler for the same ggplot
+  output$downloadPlot <- downloadHandler(
+    filename = function() {
+      paste0(input$plotType, "_plot.png")
+    },
+    content = function(file) {
+      # Use ggsave to write a high‐res PNG from the ggplot object
+      ggsave(
+        filename = file,
+        plot     = exploratory_gg(),
+        device   = "png",
+        width    = 8,     # inches
+        height   = 6,     # inches
+        dpi      = 300
+      )
+    }
+  )
+
+  output$exploratoryPlot <- renderPlotly({
+    df <- working_df()
+    p <- switch(input$plotType,
+      "age_dist"     = ggplot(df, aes(age)) + geom_histogram(bins = input$ageBins, fill = "#66c2a5", color = "black") + labs(title = "Age Distribution"),
+      "sex_outcome"  = ggplot(df, aes(sex, fill = dead)) + geom_bar(position = "fill") + scale_fill_manual(values = fill_colors) + labs(title = "Outcomes by Sex", fill = "Outcome"),
+      "overall"      = ggplot(df, aes(dead, fill = dead)) + geom_bar() + scale_fill_manual(values = fill_colors) + labs(title = "Overall Outcome", fill = "Outcome"),
+      "age_outcome"  = ggplot(df, aes(age, fill = dead)) + geom_histogram(bins = input$ageOutcomeBins, alpha = 0.6) + scale_fill_manual(values = fill_colors) + labs(title = "Age by Outcome", fill = "Outcome"),
+      "race_outcome" = ggplot(df, aes(racegp, fill = dead)) + geom_bar(position = "fill") + scale_fill_manual(values = fill_colors) + labs(title = "Outcomes by Race", fill = "Outcome"),
+      "time_followup"= ggplot(df, aes(intxsurv)) + geom_histogram(bins = 30, fill = "#8da0cb", color = "black") + labs(title = "Follow-Up Time (Days)"),
+      "gvhd_survival"= ggplot(df, aes(agvhdgp, fill = dead)) + geom_bar(position = "fill") + scale_fill_manual(values = fill_colors) + labs(title = "Survival by aGVHD", fill = "Outcome"),
+      "renal_survival"= ggplot(df, aes(renfail, fill = dead)) + geom_bar(position = "fill") + scale_fill_manual(values = fill_colors) + labs(title = "Survival by Renal Failure", fill = "Outcome")
+    ) + custom_theme
+    ggplotly(p) %>% layout(legend = list(title = list(text = "<b>Outcome</b>"), orientation = "h", x = 0.1, y = -0.2))
+  })
+
+ output$plotInterpretation <- renderText(switch(input$plotType,
+  "age_dist" = "Shows how patient ages are distributed in the dataset.",
+  "sex_outcome" = "Compares outcome proportions across sex categories.",
+  "overall" = "Displays the overall survival outcome distribution.",
+  "age_outcome" = "Age distribution separated by survival outcome.",
+  "race_outcome" = "Proportions of survival outcomes across racial groups.",
+  "time_followup" = "Distribution of time (in days) from transplant to follow-up.",
+  "gvhd_survival" = "Survival outcome based on GVHD severity group.",
+  "renal_survival" = "Impact of renal failure on survival outcome."
+))
+ 
+split_r <- reactive({
+    req(working_df())    # ensure data is available
+    rsample::initial_split(working_df(), prop = 0.7)
+  })
+train_r <- reactive({
+    rsample::training(split_r())
+  })
+  test_r  <- reactive({
+    rsample::testing(split_r())
+  })
+
+  model_fit <- reactive({
+    glm(
+      dead ~ age + racegp + karnofcat + hctcigp + 
+             diseasegp + atgcampathgp + graftgp + drabomatch + 
+             kidfunc + condgp + malig_grp + yeartx + drcmvgp +
+             priautogp + plsmpshi + intxsurv + renfail + dnrtype + agvhdgp,
+      data    = train_r(),
+      family  = binomial
+    )
+  })
+  output$modelSummary <- renderPrint(summary(model_fit()))
+
+  output$forestPlot <- renderPlotly({
+  # Get model coefficients and confidence intervals
+  m <- model_fit()
+  est <- coef(summary(m))[-1, , drop = FALSE]
+  OR <- exp(est[, 1])
+  CI <- exp(confint(m))[-1, ]
+  
+  # Create data frame for plotting
+  forest_df <- data.frame(
+    Predictor = rownames(est),
+    OR = OR,
+    Lower_CI = CI[, 1],
+    Upper_CI = CI[, 2],
+    stringsAsFactors = FALSE
+  )
+  
+  # Add significance indicator
+  forest_df$Significant <- with(forest_df, 
+                               ifelse(Lower_CI > 1 | Upper_CI < 1, "Yes", "No"))
+  
+  # Sort by odds ratio
+  forest_df <- forest_df[order(forest_df$OR), ]
+  
+  # Reorder factors for plotting
+  forest_df$Predictor <- factor(forest_df$Predictor, levels = forest_df$Predictor)
+  
+  # Take log for better visualization while preserving original values for hover
+  forest_df$log_OR <- log10(forest_df$OR)
+  forest_df$log_Lower <- log10(forest_df$Lower_CI)
+  forest_df$log_Upper <- log10(forest_df$Upper_CI)
+  
+  # Create custom labels for hover
+  forest_df$hover_text <- paste0(
+    "Predictor: ", forest_df$Predictor, "<br>",
+    "Odds Ratio: ", round(forest_df$OR, 2), "<br>",
+    "95% CI: (", round(forest_df$Lower_CI, 2), ", ", round(forest_df$Upper_CI, 2), ")"
+  )
+  
+  # Create plot using ggplot2
+  p <- ggplot(forest_df, aes(y = Predictor)) +
+    # Add reference line at OR = 1
+    geom_vline(xintercept = 1, linetype = "dashed", color = "white", alpha = 0.7) +
+    # Add error bars
+    geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI, color = Significant), 
+                  height = 0.3, alpha = 0.8) +
+    # Add points
+    geom_point(aes(x = OR, color = Significant, text = hover_text), size = 4) +
+    # Use log scale for x-axis
+    scale_x_log10(breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10, 50, 100, 200, 400),
+                 labels = c(0.1, 0.2, 0.5, 1, 2, 5, 10, 50, 100, 200, 400)) +
+    # Set colors
+    scale_color_manual(values = c("Yes" = "#fc8d62", "No" = "#66c2a5")) +
+    # Add labels
+    labs(
+      title = "Odds Ratios (95% CI)",
+      x = "Odds Ratio (log scale)",
+      y = "",
+      color = "Statistically Significant"
+    ) +
+    # Apply custom theme
+    custom_theme +
+    theme(
+      panel.grid.minor.x = element_blank(),
+      panel.grid.major.y = element_blank(),
+      axis.text.y = element_text(size = 9),
+      legend.position = "bottom"
+    )
+  
+  # Convert to plotly with hover information
+  ggplotly(p, tooltip = "text") %>%
+    layout(
+      legend = list(orientation = "h", x = 0.5, y = -0.2, xanchor = "center"),
+      margin = list(l = 150),  # Add margin for predictor names
+      hoverlabel = list(bgcolor = "#2b2b2b", font = list(color = "white"))
+    )
+})
+
+  output$rocCurve <- renderPlotly({
+  df <- test_r();
+  # We need to make predictions specifically on the test data
+  prob <- predict(model_fit(), newdata = df, type = "response");
+  # Convert factor to numeric for ROC calculation
+  actual <- as.numeric(df$dead == "Dead");
+  roc_obj <- roc(actual, prob);
+  p <- ggroc(roc_obj, color = "red") + labs(title = "ROC Curve") + custom_theme; 
+  ggplotly(p)
+})
+
+  output$modelMetrics <- renderPrint({
+  df <- test_r();  # Now using test data
+  prob <- predict(model_fit(), newdata = df, type = "response");  # Add newdata parameter
+  pred <- factor(ifelse(prob > 0.5, "Dead", "Alive"), levels = c("Alive", "Dead")); 
+  print(confusionMatrix(pred, df$dead))
+})
+
+  output$riskPlot <- renderPlotly({
+  df <- test_r();  # Now using test data
+  prob <- predict(model_fit(), newdata = df, type = "response");  # Add newdata parameter
+  df$risk_category <- cut(prob, breaks = c(-Inf, input$cutoff1, input$cutoff2, Inf), labels = c("Low", "Medium", "High"));
+  p <- ggplot(df, aes_string(x = input$stratVar, fill = "risk_category")) + geom_bar(position = "fill") + scale_y_continuous(labels = scales::percent) + labs(title = paste("Risk by", input$stratVar, "(Test Data)"), fill = "Risk") + custom_theme; 
+  ggplotly(p)
+})
+
+  output$variableImportance <- renderPlotly({
+    coefs <- coef(summary(model_fit()))[-1,1]; df3 <- data.frame(Var = names(coefs), Coef = coefs);
+    p <- ggplot(df3, aes(reorder(Var, Coef), Coef)) + geom_col(fill = "#66c2a5") + coord_flip() + labs(title = "Coefficients") + custom_theme; ggplotly(p)
+  })
+
+  output$variablesTable <- renderDT({
+  datatable(
+    data.frame(
+      Variable = c("dead", "age", "racegp", "karnofcat", "hctcigp", "diseasegp",
+                   "atgcampathgp", "graftgp", "drabomatch", "kidfunc", "condgp",
+                   "malig_grp", "yeartx", "drcmvgp", "priautogp", "plsmpshi",
+                   "intxsurv", "renfail", "dnrtype"),
+      Description = c("Survival status",
+                       "Patient age at transplant",
+                       "Patient race group",
+                       "Karnofsky performance status",
+                       "HCT comorbidity index",
+                       "Disease group",
+                       "ATG/Campath use",
+                       "Graft type",
+                       "HLA-DRB1 match",
+                       "Kidney function",
+                       "Conditioning regimen",
+                       "Malignancy group",
+                       "Year of transplant",
+                       "Donor/Recipient CMV status",
+                       "Prior autologous transplant",
+                       "Plasma exchange history",
+                       "Time to event (survival time)",
+                       "Renal failure",
+                       "Donor type"),
+      Type = c("Factor", "Numeric", "Factor", "Factor", "Factor", "Factor",
+               "Factor", "Factor", "Factor", "Factor", "Factor",
+               "Factor", "Numeric", "Factor", "Factor", "Factor",
+               "Numeric", "Factor", "Factor"),
+      `Possible Values` = c("Alive, Dead",
+                            "Range of ages",
+                            "Caucasian, African-American, Others",
+                            "90-100, <90",
+                            "No comorbidity, 1, 2, >=3",
+                            "Various disease categories",
+                            "ATG + CAMPATH, ATG alone, CAMPATH alone, No ATG or CAMPATH",
+                            "Bone marrow, Peripheral blood, Cord blood",
+                            "Matched, Mismatched",
+                            "Decreased kidney function, Normal kidney function",
+                            "Myeloablative TBI, Myeloablative Bu based, Other myeloablative, RIC/NMA",
+                            "Acute leukemia, Lymphoma, Myeloma, Other",
+                            "Range of years",
+                            "+/+, +/-, -/+, -/-",
+                            "No, Yes",
+                            "No, Yes",
+                            "Range of days/months",
+                            "No, Yes",
+                            "Autologous, HLA-identical sibling, etc."),
+      `Rationale for Inclusion` = c("Outcome variable",
+                                   "Known risk factor for mortality",
+                                   "Potential disparities in outcomes",
+                                   "Measure of functional status",
+                                   "Measure of pre-transplant comorbidities",
+                                   "Underlying disease severity",
+                                   "Immunosuppressive regimen",
+                                   "Source of stem cells",
+                                   "Donor-recipient compatibility",
+                                   "Organ function status",
+                                   "Intensity of pre-transplant therapy",
+                                   "Type of malignancy",
+                                   "Changes in practice over time",
+                                   "Cytomegalovirus risk",
+                                   "History of prior transplant",
+                                   "Pre-transplant treatment",
+                                   "Time until death or last follow-up",
+                                   "Post-transplant complication",
+                                   "Donor source")
+    ),
+    options = list(
+      pageLength = 10,
+      scrollX = TRUE,
+      autoWidth = TRUE,
+      columnDefs = list(list(width = '100px', targets = 0)),
+      initComplete = JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).css({'background-color': '#26A69A', 'color': 'white'});",
+        "}"
+      )
+    ),
+    rownames = FALSE
+  ) %>%
+    formatStyle(
+      columns = 1:5,
+      backgroundColor = '#E0F7FA',
+      color = 'black'
+    )
+})
+  output$downloadData <- downloadHandler(
+  filename = function() {
+    "transplant_data.csv"
+  },
+  content = function(file) {
+    # Export data as CSV (more universal than SAS format)
+    write.csv(working_df(), file, row.names = FALSE)
+  }
+)
+} 
+
+
+```
+
+```{r}
+shinyApp(ui, server)
+```
+
+
