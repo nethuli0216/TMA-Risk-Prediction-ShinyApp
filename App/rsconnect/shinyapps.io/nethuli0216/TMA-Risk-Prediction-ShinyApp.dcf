@@ -5,7 +5,7 @@ account: nethuli0216
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 16841256
-bundleId: 11678906
+bundleId: 11678947
 url: https://nethuli0216.shinyapps.io/TMA-Risk-Prediction-ShinyApp/
 version: 1
 asMultiple: FALSE
